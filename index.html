@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Image Captioning → Gemini Demo</title>
+<style>
+  :root{
+    --bg:#071726; --card:#0b1220; --muted:#94a3b8; --accent:#60a5fa;
+    --glass: rgba(255,255,255,0.03);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; font-family:Inter,Arial,sans-serif;
+    background:linear-gradient(180deg,#041323 0%,#071726 60%);
+    color:#e6eef8; display:flex;justify-content:center;align-items:flex-start;padding:28px;
+  }
+  .wrap{width:100%;max-width:1100px}
+  header{display:flex;flex-direction:column;gap:6px;margin-bottom:18px}
+  h1{margin:0;font-size:22px}
+  p.lead{margin:0;color:var(--muted);font-size:13px}
+  .grid{display:grid;grid-template-columns:420px 1fr;gap:20px}
+  .card{background:linear-gradient(180deg,var(--glass),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.03);padding:14px;border-radius:12px}
+  .drop{border:2px dashed rgba(255,255,255,0.04);padding:16px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:260px;cursor:pointer;position:relative}
+  .drop > div{pointer-events:none} /* important: allow click to pass through inner div */
+  canvas{width:100%;height:auto;border-radius:8px;background:#06121a;display:block}
+  .controls{display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .btn{background:var(--accent);color:#04203a;border:none;padding:10px 12px;border-radius:8px;font-weight:700;cursor:pointer}
+  .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted)}
+  .small{font-size:12px;color:var(--muted)}
+  .detected,.list{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+  .tag{display:inline-block;background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:999px;font-size:13px;color:var(--muted)}
+  .caps-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
+  .cap-card{background:rgba(255,255,255,0.02);padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:8px}
+  .cap-text{font-size:14px;color:#e6eef8;min-height:48px}
+  .cap-actions{display:flex;justify-content:flex-end}
+  textarea{width:100%;min-height:90px;background:transparent;border:1px solid rgba(255,255,255,0.04);padding:10px;border-radius:8px;color:inherit}
+  .overlay{position:fixed;inset:0;background:rgba(2,6,23,0.6);display:flex;align-items:center;justify-content:center;z-index:999;visibility:hidden;opacity:0;transition:opacity .2s}
+  .overlay.show{visibility:visible;opacity:1}
+  .spinner{background:rgba(255,255,255,0.03);padding:16px;border-radius:10px;border:1px solid rgba(255,255,255,0.04);text-align:center}
+  .toast{position:fixed;right:22px;bottom:22px;background:#04203a;color:#e6eef8;padding:10px 12px;border-radius:8px;box-shadow:0 6px 18px rgba(2,6,23,0.6);opacity:0;transform:translateY(8px);transition:opacity .22s,transform .22s;z-index:1000}
+  .toast.show{opacity:1;transform:translateY(0)}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Image Captioning (Gemini Demo)</h1>
+    <p class="lead">Upload image, detect features in-browser, send features + image to Gemini for description + captions.</p>
+  </header>
+
+  <div class="grid">
+    <!-- Left: Upload -->
+    <div class="card">
+      <div class="drop" id="drop">
+        <div><strong>Drag & drop an image</strong><br><div class="small">or click to choose (PNG, JPG)</div></div>
+        <input id="fileInput" type="file" accept="image/*" style="display:none">
+        <canvas id="canvas"></canvas>
+      </div>
+
+      <div class="controls">
+        <label class="small">Top-K labels</label>
+        <select id="topk"><option>3</option><option selected>5</option><option>7</option><option>10</option></select>
+        <button id="analyze" class="btn">Analyze & Caption</button>
+        <button id="clear" class="btn ghost">Clear</button>
+      </div>
+      <div class="small" style="margin-top:10px">⚠️ Demo only: keep API key safe.</div>
+    </div>
+
+    <!-- Right: Results -->
+    <div class="card">
+      <div>
+        <div class="section-title" style="font-weight:700">Detected objects</div>
+        <div id="detectedList" class="detected"><div class="small">No image loaded.</div></div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="section-title" style="font-weight:700">Top labels</div>
+        <div id="labels" class="list"><div class="small">No labels yet.</div></div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="section-title" style="font-weight:700">AI Description</div>
+        <div id="descriptionArea" class="small">No description yet.</div>
+
+        <div class="section-title" style="font-weight:700;margin-top:8px">Captions</div>
+        <div id="captionsGrid" class="caps-grid"></div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="section-title" style="font-weight:700">Caption editor</div>
+        <textarea id="captionEditor" placeholder="Edit or create your caption here..."></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="copyEditor" class="btn">Copy caption</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="overlay" class="overlay"><div class="spinner"><div style="font-weight:700;margin-bottom:6px">Generating captions…</div><div class="small">Models + API call in progress — please wait.</div></div></div>
+<div id="toast" class="toast">✅ Copied!</div>
+
+<!-- TensorFlowJS -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+
+<script>
+const GEMINI_API_KEY = ""; // put your Gemini API key here
+const GEMINI_MODEL = "gemini-1.5-flash-latest";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+const fileInput = document.getElementById('fileInput');
+const drop = document.getElementById('drop');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const analyzeBtn = document.getElementById('analyze');
+const clearBtn = document.getElementById('clear');
+const detectedList = document.getElementById('detectedList');
+const labelsEl = document.getElementById('labels');
+const descriptionArea = document.getElementById('descriptionArea');
+const captionsGrid = document.getElementById('captionsGrid');
+const captionEditor = document.getElementById('captionEditor');
+const topk = document.getElementById('topk');
+const overlay = document.getElementById('overlay');
+const toast = document.getElementById('toast');
+const copyEditor = document.getElementById('copyEditor');
+
+let img = new Image();
+let cocoModel = null;
+let mobilenetModel = null;
+
+async function loadModels(){
+  descriptionArea.textContent = 'Loading models...';
+  cocoModel = await cocoSsd.load();
+  mobilenetModel = await mobilenet.load();
+  descriptionArea.textContent = 'Models loaded. Upload an image to start.';
+}
+loadModels();
+
+drop.addEventListener('click', ()=>fileInput.click());
+drop.addEventListener('dragover', e=>{e.preventDefault(); drop.style.borderColor='rgba(96,165,250,0.9)';});
+drop.addEventListener('dragleave', e=>{e.preventDefault(); drop.style.borderColor='rgba(255,255,255,0.04)';});
+drop.addEventListener('drop', e=>{e.preventDefault(); drop.style.borderColor='rgba(255,255,255,0.04)'; const f=e.dataTransfer.files?.[0]; if(f) handleFile(f);});
+fileInput.addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f) handleFile(f); });
+
+function handleFile(file){
+  const reader = new FileReader();
+  reader.onload = ()=> {
+    img.src = reader.result;
+    img.onload = ()=>{
+      const maxW = 900;
+      const scale = Math.min(1,maxW/img.width);
+      canvas.width = img.width*scale;
+      canvas.height = img.height*scale;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      detectedList.innerHTML='<div class="small">Image loaded. Click Analyze.</div>';
+      labelsEl.innerHTML='';
+      descriptionArea.innerHTML='<div class="small">Ready to analyze.</div>';
+      captionsGrid.innerHTML='';
+    };
+  };
+  reader.readAsDataURL(file);
+}
+
+// Analyze & Caption
+analyzeBtn.addEventListener('click', async ()=>{
+  if(!img.src){ alert('Please upload an image'); return; }
+  overlay.classList.add('show');
+
+  try{
+    const detections = await cocoModel.detect(canvas);
+    detectedList.innerHTML = '';
+    detections.forEach(d=>{
+      const el = document.createElement('div');
+      el.className='tag';
+      el.textContent=d.class + ` (${(d.score*100).toFixed(1)}%)`;
+      detectedList.appendChild(el);
+    });
+
+    const topK = parseInt(topk.value||5,10);
+    const predictions = await mobilenetModel.classify(canvas, topK);
+    labelsEl.innerHTML = '';
+    predictions.forEach(p=>{
+      const el = document.createElement('div'); el.className='tag';
+      el.textContent = `${p.className.split(',')[0]} (${(p.probability*100).toFixed(1)}%)`;
+      labelsEl.appendChild(el);
+    });
+
+    descriptionArea.innerHTML='<div class="small">AI description would appear here...</div>';
+    captionsGrid.innerHTML='<div class="small">Captions would appear here...</div>';
+
+    // Gemini call placeholder (AIzaSyACl761R64Do6uaAsWnopPwPQmCL1VdMpM)
+    // const aiText = await fetchGeminiCaption(...);
+    // parseResponseText(aiText)...
+
+  }catch(err){ console.error(err); alert('Failed to analyze image'); }
+  finally{ overlay.classList.remove('show'); }
+});
+
+// Clear
+clearBtn.addEventListener('click', ()=>{
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  canvas.width=canvas.height=0;
+  detectedList.innerHTML='';
+  labelsEl.innerHTML='';
+  descriptionArea.innerHTML='';
+  captionsGrid.innerHTML='';
+  captionEditor.value='';
+});
+
+// Copy
+copyEditor.addEventListener('click', ()=>{
+  const txt = captionEditor.value || '';
+  if(!txt){ alert('Caption empty'); return; }
+  navigator.clipboard.writeText(txt).then(()=>showToast('✅ Caption copied')).catch(()=>alert('Copy failed'));
+});
+
+function showToast(msg){toast.textContent=msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),1800);}
+</script>
+</body>
+</html>
